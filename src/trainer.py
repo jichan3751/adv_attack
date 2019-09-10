@@ -26,14 +26,22 @@ def main(RANK, eps):
             "momentum": 0.9,
             "batch_size":100,
             "eps" : eps,
-            "lr_multipliers":[1.0, 0.9 ,0.8, 0.7, 0.6],
+            "norm": "l2", # l2, linf
+            "load_weight": "adv", # nat, adv, sec
+            "lr_multipliers": [1.0, 0.9 ,0.8, 0.7, 0.6],
             "model":"cnn", #"fcn", "cnn"
-            "fc_hidden_layers": lists_fc_hidden_layers[RANK]
+            "fc_id": RANK, # id for model
+            "fc_hidden_layers": lists_fc_hidden_layers[RANK],
+
+            # optional
+            "lr_multipliers_init": [
+                1.0, 0.9 ,0.8, 0.7, 0.6, \
+                0.5, 0.4,0.3,0.2,0.1]
         }
 
     # override (debug)
-    # config["max_epoch"] = 1
-    # config["lr_multipliers"] = [1.0, 1.0]
+    config["max_epoch"] = 1
+    config["lr_multipliers"] = [1.0, 1.0]
 
     print('Running EXP for:')
     print(config)
@@ -86,19 +94,17 @@ class Trainer(object):
         self.sess.run(init)
         self.saver = tf.train.Saver(max_to_keep=0)
 
-        fetch_checkpoint_hack(self.sess, self.model.weights_nat, model='adv') # load naturual model
+        fetch_checkpoint_hack(self.sess, self.model.weights_nat, model=self.config['load_weight']) # load naturual model
 
     def run_train_pbt(self, rank=0 ,verbose = 1):
         SMALL_LR_THRESHOLD = 10 ** -5
-        CKPT = 'ckpt%d/'%rank
+        checkpoint_dir = './ckpt/' + self.fname_prefix()
 
         c = self.config
 
         infos_history = []
-        lrm_history = []
         current_lr = c['lr']
-
-        self.saver.save(self.sess, CKPT+"model_best.ckpt")
+        self.saver.save(self.sess, checkpoint_dir+"model_best.ckpt")
 
         stats = self.model.eval(self.sess, self.train_dataset)
         train_stats = {
@@ -122,9 +128,8 @@ class Trainer(object):
             weight_sets = []
             cur_infos = []
 
-            if epoch == 0:
-                lr_multipliers = [1.0, 0.9 ,0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2 , 0.1]
-
+            if epoch == 0 and 'lr_multipliers_init' in self.config:
+                lr_multipliers = self.config['lr_multipliers_init']
             else:
                 lr_multipliers = c['lr_multipliers']
 
@@ -142,18 +147,18 @@ class Trainer(object):
                 t00 = time.time()
                 lr = current_lr * lr_multipliers[lr_i]
 
-                self.saver.restore(self.sess, CKPT+"model_best.ckpt")
+                self.saver.restore(self.sess, checkpoint_dir+"model_best.ckpt")
 
                 train_stats = self.model.train(self.sess, self.train_dataset, learning_rate = lr, verbose = 0)
                 val_stats = self.model.eval(self.sess,self.test_dataset)
 
-                info = {"lr":lr, "best":False}
+                info = {"lr":lr, "lrm":lr_multipliers[lr_i],"best":False}
                 info.update(train_stats)
                 info.update(val_stats)
 
                 cur_infos.append(info)
 
-                self.saver.save(self.sess, CKPT+"model_%d.ckpt"%(lr_i))
+                self.saver.save(self.sess, checkpoint_dir+"model_%d.ckpt"%(lr_i))
 
                 t01 = time.time()
                 # if verbose: print('  epoch %d train %.3f test %.3f lr %.3f took %.2fsec'%
@@ -163,15 +168,14 @@ class Trainer(object):
 
 
             b_i = self._get_best_config_index(cur_infos, metric='val_loss', min_or_max='max')
-            lrm_history.append(lr_multipliers[b_i])
             cur_infos[b_i]['best'] = True
             current_lr = cur_infos[b_i]['lr']
 
             infos_history.append(cur_infos)
             info = cur_infos[b_i]
-            self.saver.restore(self.sess, CKPT+"model_%d.ckpt"%(b_i))
+            self.saver.restore(self.sess, checkpoint_dir+"model_%d.ckpt"%(b_i))
             time.sleep(2)
-            self.saver.save(self.sess, CKPT+"model_best.ckpt")
+            self.saver.save(self.sess, checkpoint_dir+"model_best.ckpt")
 
             t1 = time.time()
 
@@ -184,8 +188,14 @@ class Trainer(object):
 
             # import ipdb; ipdb.set_trace()
 
+        results_path = './results/' + self.fname_prefix()
+        self.saver.save(self.sess, results_path+"model_best.ckpt")
+
+
         self.infos_history = infos_history
-        self.lrm_history = lrm_history
+        import pickle
+        pickle.dump( self.infos_history , open( results_path+"infos_history.p", "wb" ))
+
 
     def save(self):
         # weights = self.model.get_weights(self.sess)
@@ -201,7 +211,7 @@ class Trainer(object):
         pass
 
     def sweep_history_train(self):
-
+        # for reproducing
         pass
 
     def _get_best_config_index(self, cur_infos, metric, min_or_max='min'):
@@ -212,7 +222,25 @@ class Trainer(object):
             best_config_index = np.argmax(scores)
         return best_config_index
 
+    def fname_prefix(self):
+        str1 = "norm{norm}_w{load_weight}_eps{eps:.2f}_model{model}_fc{fc_id}_lr{lr:.3f}_me{max_epoch}_".format(**self.config)
+        return str1
+
     ##### hacks ############
+
+    def restore_and_get_avg_loss(self, dataset ,img_indices):
+        results_path = './results/' + self.fname_prefix()
+
+        self.saver.restore(self.sess, results_path+"model_best.ckpt")
+
+        if dataset=='train':
+            val_stats = self.model.eval_by_index(self.sess, self.train_dataset, img_indices)
+        elif dataset=='test':
+            val_stats = self.model.eval_by_index(self.sess, self.test_dataset, img_indices)
+        else:
+            assert 0
+
+        print("avg_loss:{val_loss}, avg_acc{val_acc}".format(**val_stats))
 
 
 class MyModel(object):
@@ -328,6 +356,33 @@ class MyModel(object):
 
         return val_stats
 
+    def eval_by_index(self, sess, test_dataset, indices):
+        x, y = test_dataset.load_index()
+
+        feed_dict0 = {
+                self.x_pl:x,
+                self.y_pl:y,
+            }
+
+        test_loss = sess.run(self.loss, feed_dict = feed_dict0)
+        # correct_prediction1 = sess.run(self.correct_prediction, feed_dict = feed_dict0)
+
+        # val_stats = {
+        #     'val_loss':float(test_loss),
+        #     'val_acc': sum(correct_prediction1) / test_dataset.num_data
+        #     }
+
+        accuracy = sess.run(self.accuracy, feed_dict = feed_dict0)
+
+        val_stats = {
+            'val_loss':float(test_loss),
+            'val_acc': float(accuracy)
+            }
+
+
+
+        return val_stats
+
 
     def get_weights(self, sess):
         weights = {}
@@ -415,6 +470,19 @@ class Dataset(object):
 
     def entire(self):
         return self.x, self.y
+
+    def load_index(self, indices):
+        if len(self.x.shape)==1:
+            out_x = self.x[indices]
+        else:
+            out_x = self.x[indices,:]
+
+        if len(self.y.shape)==1:
+            out_y = self.y[indices]
+        else:
+            out_y = self.y[indices,:]
+
+        return out_x, out_y
 
 class MnistTrain(Dataset):
     def load_data(self):

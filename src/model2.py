@@ -46,7 +46,13 @@ def layers_fcn(x_input, config):
 
     h_fc_out = acts['h_fc%d'%(len(sizes)+1)]
 
-    output_direction =  tf.linalg.l2_normalize(h_fc_out, axis = 1)
+
+    if config['norm'] == 'l2':
+        output_direction =  tf.linalg.l2_normalize(h_fc_out, axis = 1)
+    elif config['norm'] == 'linf':
+        assert 0, "not yet implemented"
+    else:
+        assert 0
 
     return output_direction, weights
 
@@ -148,7 +154,13 @@ def layers_cnn(x_input, config):
 
 
     h_fc_out = acts['h_fc%d'%(len(sizes)+1)]
-    output_direction = tf.linalg.l2_normalize(h_fc_out, axis = 1)
+
+    if config['norm'] == 'l2':
+        output_direction =  tf.linalg.l2_normalize(h_fc_out, axis = 1)
+    elif config['norm'] == 'linf':
+        assert 0, "not yet implemented"
+    else:
+        assert 0
 
     return output_direction, weights
 
