@@ -58,6 +58,10 @@ def main(RANK, eps):
         # AA.tmp11()
         # AA.check_initial_loss_per_train_image()
 
+    # with Timer(name = 'avg_loss') as t:
+    #     img_indices = [0,1,2]
+    #     AA.restore_and_get_avg_loss(dataset='train' ,img_indices=img_indices)
+
 
 class Trainer(object):
     def __init__(self, config, seed = 0):
@@ -528,7 +532,7 @@ if __name__ == "__main__":
     RANK = int(sys.argv[1])
     eps = float(sys.argv[2])
 
-    generate_dirs(['./plots','./ckpt%d'%RANK])
+    generate_dirs(['./plots','./ckpt','./results'])
     start_time = time.time()
     main(RANK, eps)
     duration = (time.time() - start_time)
