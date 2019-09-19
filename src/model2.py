@@ -158,7 +158,14 @@ def layers_cnn(x_input, config):
     if config['norm'] == 'l2':
         output_direction =  tf.linalg.l2_normalize(h_fc_out, axis = 1)
     elif config['norm'] == 'linf':
-        assert 0, "not yet implemented"
+        # normalize by l-inifinity norm
+
+        norms = tf.norm(h_fc_out,ord=np.inf, axis=1)
+        rec_norms = tf.reciprocal(norms)
+
+        tt = tf.transpose(tf.ones([h_fc_out.shape[1], 1]) * rec_norms)
+
+        output_direction =  h_fc_out * tt
     else:
         assert 0
 

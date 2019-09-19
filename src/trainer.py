@@ -10,7 +10,7 @@ from util import *
 from model2 import *
 from load_model import *
 
-def main(RANK, eps):
+def main(RANK, eps, load_weight):
 
     lists_fc_hidden_layers = [
             [ 1024*2, 1024*5, 1024*2, 1024*2],
@@ -22,12 +22,12 @@ def main(RANK, eps):
 
     config = {
             "max_epoch": 200,
-            "lr": 0.2, # base lr (default 0.1)
+            "lr": 0.02, # base lr (default 0.1)
             "momentum": 0.9,
             "batch_size":100,
             "eps" : eps,
-            "norm": "l2", # l2, linf
-            "load_weight": "adv", # nat, adv, sec
+            "norm": "linf", # l2, linf
+            "load_weight": load_weight, # nat, adv, sec
             "lr_multipliers": [1.0, 0.9 ,0.8, 0.7, 0.6],
             "model":"cnn", #"fcn", "cnn"
             "fc_id": RANK, # id for model
@@ -40,8 +40,8 @@ def main(RANK, eps):
         }
 
     # override (debug)
-    config["max_epoch"] = 1
-    config["lr_multipliers"] = [1.0, 1.0]
+    # config["max_epoch"] = 1
+    # config["lr_multipliers_init"] = [1.0, 0.9]
 
     print('Running EXP for:')
     print(config)
@@ -54,14 +54,25 @@ def main(RANK, eps):
     with Timer(name = 'run_train') as t:
         AA.run_train_pbt(rank=RANK)
         AA.save()
+
+        # not right now
         # AA.run_train_single_batch()
         # AA.tmp11()
         # AA.check_initial_loss_per_train_image()
 
-    # with Timer(name = 'avg_loss') as t:
-    #     img_indices = [0,1,2]
-    #     AA.restore_and_get_avg_loss(dataset='train' ,img_indices=img_indices)
+    with Timer(name = 'avg_loss') as t:
+        # img_indices = [0,1,2]
+        # img_indices = range(2000, 2100)
+        # AA.restore_and_get_avg_loss(dataset='train' ,img_indices=img_indices)
 
+        img_indices = range(0, 10000)
+        AA.restore_and_get_avg_loss(dataset='test' ,img_indices=img_indices)
+
+        img_indices = range(0, 55000)
+        AA.restore_and_get_avg_loss(dataset='train' ,img_indices=img_indices)
+
+    with Timer(name = 'check_norm') as t:
+        AA.restore_and_check_norm()
 
 class Trainer(object):
     def __init__(self, config, seed = 0):
@@ -101,7 +112,13 @@ class Trainer(object):
         fetch_checkpoint_hack(self.sess, self.model.weights_nat, model=self.config['load_weight']) # load naturual model
 
     def run_train_pbt(self, rank=0 ,verbose = 1):
-        SMALL_LR_THRESHOLD = 10 ** -5
+
+        if self.check_result_file_exist():
+            print("!!!! skipping experiment since result file exist")
+            return
+
+
+        SMALL_LR_THRESHOLD = 0.0001
         checkpoint_dir = './ckpt/' + self.fname_prefix()
 
         c = self.config
@@ -156,7 +173,7 @@ class Trainer(object):
                 train_stats = self.model.train(self.sess, self.train_dataset, learning_rate = lr, verbose = 0)
                 val_stats = self.model.eval(self.sess,self.test_dataset)
 
-                info = {"lr":lr, "lrm":lr_multipliers[lr_i],"best":False}
+                info = {"epoch":epoch, "lr":lr, "lrm":lr_multipliers[lr_i],"best":False}
                 info.update(train_stats)
                 info.update(val_stats)
 
@@ -169,7 +186,7 @@ class Trainer(object):
                 #     (epoch,info['train_loss'],info['val_loss'],info['lr'], t01 - t00 ))
                 if verbose: print('  epoch %d train l %f a %f test l %f a %f lr %f took %.2fsec'%
                     (epoch,info['train_loss'],info['train_acc'],info['val_loss'],info['val_acc'],info['lr'], t01 - t00 ))
-
+                # if verbose: print('  epoch {epoch} norm {norm}'.format(epoch = epoch, norm = info['train_norm']))
 
             b_i = self._get_best_config_index(cur_infos, metric='val_loss', min_or_max='max')
             cur_infos[b_i]['best'] = True
@@ -195,10 +212,46 @@ class Trainer(object):
         results_path = './results/' + self.fname_prefix()
         self.saver.save(self.sess, results_path+"model_best.ckpt")
 
-
         self.infos_history = infos_history
         import pickle
         pickle.dump( self.infos_history , open( results_path+"infos_history.p", "wb" ))
+
+
+        self.remove_checkpoint_files()
+
+    def check_result_file_exist(self):
+        import os
+        results_path = './results/' + self.fname_prefix()
+        fname = results_path+"infos_history.p"
+        print("checking ", fname)
+
+        return os.path.isfile( results_path+"infos_history.p")
+
+    def remove_checkpoint_files(self):
+        checkpoint_dir = './ckpt/' + self.fname_prefix()
+
+        if 'lr_multipliers_init' in self.config:
+            num_run_per_epoch = len(self.config['lr_multipliers_init'])
+        else:
+            num_run_per_epoch = len(self.config['lr_multipliers'])
+
+        def rm_file(fname):
+            import os
+            if os.path.isfile(fname):
+                os.remove(fname)
+
+        for i in range(num_run_per_epoch):
+            ckpt_name = checkpoint_dir+"model_%d.ckpt"%(i)
+            rm_file(ckpt_name + ".index")
+            rm_file(ckpt_name + ".meta")
+            rm_file(ckpt_name + ".data-00000-of-00001")
+
+        ckpt_name = checkpoint_dir+"model_best.ckpt"
+        rm_file(ckpt_name + ".index")
+        rm_file(ckpt_name + ".meta")
+        rm_file(ckpt_name + ".data-00000-of-00001")
+
+
 
 
     def save(self):
@@ -244,7 +297,24 @@ class Trainer(object):
         else:
             assert 0
 
-        print("avg_loss:{val_loss}, avg_acc{val_acc}".format(**val_stats))
+        print(dataset+" avg_loss:{val_loss}, avg_acc:{val_acc}".format(**val_stats))
+
+    def restore_and_check_norm(self):
+        results_path = './results/' + self.fname_prefix()
+        self.saver.restore(self.sess, results_path+"model_best.ckpt")
+
+        indices = range(0, 55000)
+        x, y = self.train_dataset.load_index(indices)
+
+        # import ipdb; ipdb.set_trace()
+
+        feed_dict0 = {
+                self.model.x_pl:x,
+                self.model.y_pl:y,
+            }
+
+        print(self.config['norm'],'norm', self.sess.run(self.model.adv_norm, feed_dict = feed_dict0))
+
 
 
 class MyModel(object):
@@ -264,7 +334,16 @@ class MyModel(object):
         self.outputs_adv , self.weights_adv = layers(x_input = self.x_pl, config = self.config)
 
         self.t = self.config['eps']
-        self.adv_image = self.x_pl + self.t * self.outputs_adv
+        self.adv_image_no_clip = self.x_pl + self.t * self.outputs_adv
+        self.adv_image = tf.clip_by_value(self.adv_image_no_clip, 0, 1) # added
+
+        if self.config['norm'] == 'l2':
+            self.adv_norm = tf.norm( self.adv_image - self.x_pl)
+        elif self.config['norm'] == 'linf':
+            self.adv_norm = tf.norm( self.adv_image - self.x_pl, ord = np.inf)
+        else:
+            assert 0
+
 
         self.pre_softmax_adv = model_nat(self.adv_image, self.weights_nat)
 
@@ -328,7 +407,8 @@ class MyModel(object):
 
         train_stats = {
             'train_loss':stats['val_loss'],
-            'train_acc':stats['val_acc']
+            'train_acc':stats['val_acc'],
+            'train_norm':stats['val_norm']
             }
 
         return train_stats
@@ -351,9 +431,12 @@ class MyModel(object):
 
         accuracy = sess.run(self.accuracy, feed_dict = feed_dict0)
 
+        norm = sess.run(self.adv_norm, feed_dict = feed_dict0)
+
         val_stats = {
             'val_loss':float(test_loss),
-            'val_acc': float(accuracy)
+            'val_acc': float(accuracy),
+            'val_norm': float(norm)
             }
 
 
@@ -361,7 +444,7 @@ class MyModel(object):
         return val_stats
 
     def eval_by_index(self, sess, test_dataset, indices):
-        x, y = test_dataset.load_index()
+        x, y = test_dataset.load_index(indices)
 
         feed_dict0 = {
                 self.x_pl:x,
@@ -531,10 +614,11 @@ if __name__ == "__main__":
     assert len(sys.argv)>=3
     RANK = int(sys.argv[1])
     eps = float(sys.argv[2])
+    load_weight = sys.argv[3]
 
     generate_dirs(['./plots','./ckpt','./results'])
     start_time = time.time()
-    main(RANK, eps)
+    main(RANK, eps, load_weight)
     duration = (time.time() - start_time)
 
     print("---Program Ended in %0.2f hour (%.3f sec) " % (duration/float(3600), duration))

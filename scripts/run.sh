@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 if [ "$#" -ne 1 ]; then
     echo "Provide single arg"
     exit -1
@@ -8,20 +10,31 @@ fi
 export CUDA_VISIBLE_DEVICES=$1
 echo 'Using GPU' $CUDA_VISIBLE_DEVICES
 
-# python -u src/trainer.py $1 | tee -i out_fcn_eps_10_$1.txt
+source activate tensorflow_p36
 
-python -u src/trainer.py $1 5.0  | tee -i out_cnn_eps_5_rank$1.txt
+# python -u src/trainer.py $1 5.0  | tee -i out_cnn_eps_5_rank$1.txt
 # ipython src/trainer.py 3 --pdb
 
 
 #loop
-# declare -a arr=("1.0" "2.0" "3.0" "4.0")
+declare -a arr=("1.0" "2.0" "3.0" "4.0")
 
 # ## now loop through the above array
 # for i in "${arr[@]}"
 # do
-#    # echo "$i"
-#    python -u src/trainer.py $1 $i | tee -i out_cnn_eps_$i_rank$1.txt
+#    echo "$i"
+#    # python -u src/trainer.py $1 $i
+#    # python -u src/trainer.py $1 $i | tee -i out_cnn_nat_eps_$i_rank$1_2.txt
 #    # or do whatever with individual element of the array
 # done
+
+# python -u src/trainer.py $1 0.3 nat
+# python -u src/trainer.py $1 0.3 adv
+# ipython src/trainer.py $1 0.3 --pdb
+
+python -u src/trainer.py $1 0.3 nat | tee -i out_linf_cnn_clip_nat_eps_0.3_rank$1_2.txt
+python -u src/trainer.py $1 0.3 adv | tee -i out_linf_cnn_clip_adv_eps_0.3_rank$1_2.txt
+# python -u src/trainer_linf.py $1 0.2 | tee -i out_linf_cnn_adv_eps_0.2_rank$1_2.txt
+
+
 
