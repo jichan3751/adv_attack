@@ -12,8 +12,8 @@ echo 'Using GPU' $CUDA_VISIBLE_DEVICES
 
 source activate tensorflow_p36
 
-# python -u src/trainer.py $1 5.0  | tee -i out_cnn_eps_5_rank$1.txt
-# ipython src/trainer.py 3 --pdb
+# python -u src/trainer.py --fc-id $1
+ipython  --pdb src/trainer.py -- --fc-id $1
 
 
 #loop
@@ -32,8 +32,6 @@ declare -a arr=("1.0" "2.0" "3.0" "4.0")
 # python -u src/trainer.py $1 0.3 adv
 # ipython src/trainer.py $1 0.3 --pdb
 
-python -u src/trainer.py $1 0.3 nat | tee -i out_linf_cnn_clip_nat_eps_0.3_rank$1_2.txt
-python -u src/trainer.py $1 0.3 adv | tee -i out_linf_cnn_clip_adv_eps_0.3_rank$1_2.txt
 # python -u src/trainer_linf.py $1 0.2 | tee -i out_linf_cnn_adv_eps_0.2_rank$1_2.txt
 
 

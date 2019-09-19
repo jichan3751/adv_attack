@@ -1,7 +1,8 @@
 #!/bin/bash
 
-rm results/*
+# rm results/*
 rm out/*
+rm ckpt/*
 
 rm -r plots
 

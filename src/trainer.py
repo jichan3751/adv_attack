@@ -1,4 +1,5 @@
 import time
+import argparse
 
 import numpy as np
 import tensorflow as tf
@@ -10,38 +11,66 @@ from util import *
 from model2 import *
 from load_model import *
 
-def main(RANK, eps, load_weight):
+def parse_args_get_config():
 
-    lists_fc_hidden_layers = [
-            [ 1024*2, 1024*5, 1024*2, 1024*2],
-            [ 1024*2, 1024*5, 1024*2],
-            [ 1024*2, 1024*5],
-            [ 1024*2]
-    ]
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode",type=str,default='train')
+    parser.add_argument("--eps",type=float,default=0.3)
+    parser.add_argument("--load-weight",type=str,default='nat')
+    parser.add_argument("--fc-id",type=int,default=0)
+    parser.add_argument("--norm",type=str,default='linf')
+    parser.add_argument("--skip-finished",action='store_true')
+    args = parser.parse_args()
 
     config = {
+            ### experiment related ##
             "max_epoch": 200,
-            "lr": 0.02, # base lr (default 0.1)
+            "lr": 0.1, # base lr (default 0.1)
             "momentum": 0.9,
-            "batch_size":100,
-            "eps" : eps,
+            "batch_size": 100,
+            "eps" : 0.3,
             "norm": "linf", # l2, linf
-            "load_weight": load_weight, # nat, adv, sec
-            "lr_multipliers": [1.0, 0.9 ,0.8, 0.7, 0.6],
+            "lmbd": 100, # lambda for barrier regularizer
+            "load_weight": 'nat', # nat, adv, sec
             "model":"cnn", #"fcn", "cnn"
-            "fc_id": RANK, # id for model
-            "fc_hidden_layers": lists_fc_hidden_layers[RANK],
+            "fc_id": 0, # id for model
+            "desc":'', # optional descriptor
 
+            ### not in desciptor ##
+            "lr_multipliers": [1.0, 0.9 ,0.8, 0.7, 0.6],
             # optional
             "lr_multipliers_init": [
                 1.0, 0.9 ,0.8, 0.7, 0.6, \
-                0.5, 0.4,0.3,0.2,0.1]
+                0.5, 0.4,0.3,0.2,0.1] ,
+
+            ## runtime related ##
+            "mode": 'train',
+            "skip_finished": False
+
         }
 
+    config.update(vars(args))
+
     # override (debug)
-    # config["max_epoch"] = 1
-    # config["lr_multipliers_init"] = [1.0, 0.9]
+    config["max_epoch"] = 5
+    config["lr_multipliers_init"] = [1.0, 0.9, 0.8]
+
+    ##### processing ########
+
+    lists_fc_hidden_layers = [
+            [ 1024*2],
+            [ 1024*2, 1024*5],
+            [ 1024*2, 1024*5, 1024*2],
+            [ 1024*2, 1024*5, 1024*2, 1024*2]
+    ]
+    config["fc_hidden_layers"] = lists_fc_hidden_layers[config['fc_id']]
+
+    return config
+
+
+def main():
+
+    config = parse_args_get_config()
 
     print('Running EXP for:')
     print(config)
@@ -52,13 +81,13 @@ def main(RANK, eps, load_weight):
         AA.setup()
 
     with Timer(name = 'run_train') as t:
-        AA.run_train_pbt(rank=RANK)
+        AA.run_train_pbt()
         AA.save()
 
-        # not right now
-        # AA.run_train_single_batch()
-        # AA.tmp11()
-        # AA.check_initial_loss_per_train_image()
+    #     # not right now
+    #     # AA.run_train_single_batch()
+    #     # AA.tmp11()
+    #     # AA.check_initial_loss_per_train_image()
 
     with Timer(name = 'avg_loss') as t:
         # img_indices = [0,1,2]
@@ -71,8 +100,8 @@ def main(RANK, eps, load_weight):
         img_indices = range(0, 55000)
         AA.restore_and_get_avg_loss(dataset='train' ,img_indices=img_indices)
 
-    with Timer(name = 'check_norm') as t:
-        AA.restore_and_check_norm()
+    # with Timer(name = 'check_norm') as t:
+    #     AA.restore_and_check_norm()
 
 class Trainer(object):
     def __init__(self, config, seed = 0):
@@ -111,9 +140,9 @@ class Trainer(object):
 
         fetch_checkpoint_hack(self.sess, self.model.weights_nat, model=self.config['load_weight']) # load naturual model
 
-    def run_train_pbt(self, rank=0 ,verbose = 1):
+    def run_train_pbt(self, verbose = 1):
 
-        if self.check_result_file_exist():
+        if self.config['skip_finished'] and self.check_result_file_exist():
             print("!!!! skipping experiment since result file exist")
             return
 
@@ -127,20 +156,15 @@ class Trainer(object):
         current_lr = c['lr']
         self.saver.save(self.sess, checkpoint_dir+"model_best.ckpt")
 
-        stats = self.model.eval(self.sess, self.train_dataset)
-        train_stats = {
-            'train_loss':stats['val_loss'],
-            'train_acc':stats['val_acc']
-            }
+        train_stats = self.model.eval(self.sess, self.train_dataset, prefix = 'train_')
 
-        val_stats = self.model.eval(self.sess,self.test_dataset)
+        val_stats = self.model.eval(self.sess,self.test_dataset, prefix = 'val_')
 
-        info = {}
+        info = {"epoch":-1, "lr":-1}
         info.update(train_stats)
         info.update(val_stats)
 
-        print('Epoch %d train l %.3f a %.3f test l %.3f a %.3f lr %.3f'%
-                (-1,info['train_loss'],info['train_acc'],info['val_loss'],info['val_acc'],-1.0) )
+        print(f"{self.format_stats(info)} ")
 
         for epoch in range(c['max_epoch']):
 
@@ -171,7 +195,7 @@ class Trainer(object):
                 self.saver.restore(self.sess, checkpoint_dir+"model_best.ckpt")
 
                 train_stats = self.model.train(self.sess, self.train_dataset, learning_rate = lr, verbose = 0)
-                val_stats = self.model.eval(self.sess,self.test_dataset)
+                val_stats = self.model.eval(self.sess,self.test_dataset, prefix = 'val_')
 
                 info = {"epoch":epoch, "lr":lr, "lrm":lr_multipliers[lr_i],"best":False}
                 info.update(train_stats)
@@ -182,11 +206,7 @@ class Trainer(object):
                 self.saver.save(self.sess, checkpoint_dir+"model_%d.ckpt"%(lr_i))
 
                 t01 = time.time()
-                # if verbose: print('  epoch %d train %.3f test %.3f lr %.3f took %.2fsec'%
-                #     (epoch,info['train_loss'],info['val_loss'],info['lr'], t01 - t00 ))
-                if verbose: print('  epoch %d train l %f a %f test l %f a %f lr %f took %.2fsec'%
-                    (epoch,info['train_loss'],info['train_acc'],info['val_loss'],info['val_acc'],info['lr'], t01 - t00 ))
-                # if verbose: print('  epoch {epoch} norm {norm}'.format(epoch = epoch, norm = info['train_norm']))
+                if verbose: print(f"  {self.format_stats(info)} took {(t01 - t00):.3f}sec")
 
             b_i = self._get_best_config_index(cur_infos, metric='val_loss', min_or_max='max')
             cur_infos[b_i]['best'] = True
@@ -200,8 +220,7 @@ class Trainer(object):
 
             t1 = time.time()
 
-            print('Epoch %d train l %.3f a %.3f test l %.3f a %.3f lr %.3f took %.2fsec'%
-                (epoch,info['train_loss'],info['train_acc'],info['val_loss'],info['val_acc'],info['lr'], t1 - t0 ))
+            print(f"{self.format_stats(info)} took {(t1 - t0):.3f}sec")
 
             if info['lr'] < SMALL_LR_THRESHOLD:
                 print('stop training since lr become too small')
@@ -215,7 +234,6 @@ class Trainer(object):
         self.infos_history = infos_history
         import pickle
         pickle.dump( self.infos_history , open( results_path+"infos_history.p", "wb" ))
-
 
         self.remove_checkpoint_files()
 
@@ -280,8 +298,12 @@ class Trainer(object):
         return best_config_index
 
     def fname_prefix(self):
-        str1 = "norm{norm}_w{load_weight}_eps{eps:.2f}_model{model}_fc{fc_id}_lr{lr:.3f}_me{max_epoch}_".format(**self.config)
+        str1 = "norm{norm}_w{load_weight}_eps{eps:.2f}_lmbd{lmbd:.3f}_model{model}_fc{fc_id}_lr{lr:.3f}_me{max_epoch}_{desc}_".format(**self.config)
         return str1
+
+    def format_stats(self, info):
+        str0 = "epoch {epoch} trl {train_loss:.5f} trlc {train_loss_clipped:.5f}, trrl {train_regularizer:.5f} vl {val_loss:.5f} vlc {val_loss_clipped:.5f} vlrl {train_regularizer:.5f} lr {lr:.4f}".format(**info)
+        return str0
 
     ##### hacks ############
 
@@ -334,23 +356,17 @@ class MyModel(object):
         self.outputs_adv , self.weights_adv = layers(x_input = self.x_pl, config = self.config)
 
         self.t = self.config['eps']
-        self.adv_image_no_clip = self.x_pl + self.t * self.outputs_adv
-        self.adv_image = tf.clip_by_value(self.adv_image_no_clip, 0, 1) # added
-
-        if self.config['norm'] == 'l2':
-            self.adv_norm = tf.norm( self.adv_image - self.x_pl)
-        elif self.config['norm'] == 'linf':
-            self.adv_norm = tf.norm( self.adv_image - self.x_pl, ord = np.inf)
-        else:
-            assert 0
-
+        self.adv_image = self.x_pl + self.t * self.outputs_adv
 
         self.pre_softmax_adv = model_nat(self.adv_image, self.weights_nat)
 
         ##### losses ######
 
         self.loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels = self.y_pl, logits = self.pre_softmax_adv))
-        self.obj_func = - self.loss # maximize loss
+        self.regularizer = self.config['lmbd']* tf.reduce_mean(barrier_regularizer(self.adv_image))
+
+        self.obj_func = - self.loss  +  self.regularizer  # maximize loss, minimize regularizer term
+        # self.obj_func = - (self.loss) # maximize loss
 
         #### optimizer ####
 
@@ -379,6 +395,17 @@ class MyModel(object):
         self.num_correct = tf.reduce_sum(tf.cast(self.correct_prediction, tf.int64))
         self.accuracy = tf.reduce_mean(tf.cast(self.correct_prediction, tf.float32))
 
+        if self.config['norm'] == 'l2':
+            self.adv_norm = tf.norm( self.adv_image - self.x_pl)
+        elif self.config['norm'] == 'linf':
+            self.adv_norm = tf.norm( self.adv_image - self.x_pl, ord = np.inf)
+        else:
+            assert 0
+
+        # clipped loss
+        self.adv_image_clipped = tf.clip_by_value(self.adv_image, 0, 1) # added
+        self.pre_softmax_adv_clipped = model_nat(self.adv_image_clipped, self.weights_nat)
+        self.loss_clipped = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels = self.y_pl, logits = self.pre_softmax_adv_clipped))
 
     def train(self, sess, train_dataset, learning_rate, num_epoch=1, verbose = 0):
 
@@ -403,17 +430,12 @@ class MyModel(object):
             #     print('  stopping(debug)')
             #     break
 
-        stats = self.eval(sess, train_dataset)
+        train_stats = self.eval(sess, train_dataset, prefix='train_')
 
-        train_stats = {
-            'train_loss':stats['val_loss'],
-            'train_acc':stats['val_acc'],
-            'train_norm':stats['val_norm']
-            }
 
         return train_stats
 
-    def eval(self, sess, test_dataset):
+    def eval(self, sess, test_dataset, prefix = None):
         x, y = test_dataset.entire()
 
         feed_dict0 = {
@@ -421,7 +443,7 @@ class MyModel(object):
                 self.y_pl:y,
             }
 
-        test_loss = sess.run(self.loss, feed_dict = feed_dict0)
+        test_loss = sess.run(self.obj_func, feed_dict = feed_dict0)
         # correct_prediction1 = sess.run(self.correct_prediction, feed_dict = feed_dict0)
 
         # val_stats = {
@@ -433,15 +455,23 @@ class MyModel(object):
 
         norm = sess.run(self.adv_norm, feed_dict = feed_dict0)
 
-        val_stats = {
-            'val_loss':float(test_loss),
-            'val_acc': float(accuracy),
-            'val_norm': float(norm)
+        loss_clipped = sess.run(self.loss_clipped, feed_dict = feed_dict0)
+
+        regularizer = sess.run(self.regularizer, feed_dict = feed_dict0)
+
+
+        stats = {
+            'loss':float(test_loss),
+            'acc': float(accuracy),
+            'norm': float(norm),
+            'loss_clipped': float(loss_clipped),
+            'regularizer': float(regularizer),
             }
 
+        if prefix is not None:
+            stats = dict_keys_add_prefix(stats, prefix)
 
-
-        return val_stats
+        return stats
 
     def eval_by_index(self, sess, test_dataset, indices):
         x, y = test_dataset.load_index(indices)
@@ -608,17 +638,32 @@ def L2_regularizer(trainable_weights):
 
     return regularizer
 
+def barrier_regularizer(image):
+    c = 1000 # scale x
+
+    a = 0.0 # lower limit
+    b = 1.0 # upper limit
+
+    y = ( tf.exp(c * (image-b) ) + tf.exp(c * (-(image-a)) ) )
+
+    return y
+
+def dict_keys_add_prefix(dict0,prefix):
+    keys = list(dict0.keys())
+    for key in keys:
+        new_key = prefix+key
+        dict0[new_key] = dict0[key]
+        del dict0[key]
+
+    return dict0
+
+
 
 if __name__ == "__main__":
-    import sys
-    assert len(sys.argv)>=3
-    RANK = int(sys.argv[1])
-    eps = float(sys.argv[2])
-    load_weight = sys.argv[3]
 
     generate_dirs(['./plots','./ckpt','./results'])
     start_time = time.time()
-    main(RANK, eps, load_weight)
+    main()
     duration = (time.time() - start_time)
 
     print("---Program Ended in %0.2f hour (%.3f sec) " % (duration/float(3600), duration))
